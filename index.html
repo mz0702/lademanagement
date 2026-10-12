@@ -151,69 +151,66 @@
       </div>
       <p class="msg" id="msg" role="alert"></p>
     </form>
-    <footer><a href="impressum.html">Impressum</a></footer>
+    <footer><a href="/lademanagement/impressum.html">Impressum</a></footer>
 
     <script>
-      // Content is AES-256-GCM encrypted (d.bin = salt|iv|ciphertext, f.bin = iv|ciphertext); the key is derived from the password.
-      // Keep ITER in sync with scripts/protect.mjs.
+      // The whole site is AES-256-GCM encrypted (_enc/<sha256(path)>.bin = iv|ciphertext, key = PBKDF2-SHA256(password, s.bin)).
+      // After the password is verified, the key goes to the service worker (sw.js), which decrypts every request.
+      // Keep ITER in sync with scripts/deploy.mjs; BASE is filled in by the deploy script.
+      const BASE = '/lademanagement/';
       const ITER = 600000;
       const subtle = crypto.subtle;
       const form = document.getElementById('gate');
       const input = document.getElementById('pw');
       const msg = document.getElementById('msg');
-      let data;
-      const fetchBin = (u) => fetch(u).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))));
+      const sw = 'serviceWorker' in navigator && window.isSecureContext;
+      const fetchBin = (u) => fetch(u, {cache: 'no-store'}).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))));
+      const hashName = async (p) =>
+        [...new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(p)))]
+          .slice(0, 16)
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+      if (sw) navigator.serviceWorker.register(BASE + 'sw.js', {scope: BASE}).catch(() => {});
 
-      const open = async (key) => {
-        const buf = new Uint8Array(await (data ??= fetchBin('d.bin')));
-        const html = new TextDecoder().decode(await subtle.decrypt({name: 'AES-GCM', iv: buf.slice(16, 28)}, key, buf.slice(28)));
-        let film;
-        window.__film = () =>
-          (film ??= fetchBin('f.bin').then(async (b) => {
-            b = new Uint8Array(b);
-            const mp4 = await subtle.decrypt({name: 'AES-GCM', iv: b.slice(0, 12)}, key, b.slice(12));
-            return URL.createObjectURL(new Blob([mp4], {type: 'video/mp4'}));
-          }));
-        try {
-          sessionStorage.k = btoa(String.fromCharCode(...new Uint8Array(await subtle.exportKey('raw', key))));
-        } catch {}
-        document.open();
-        document.write(html);
-        document.close();
-        if (matchMedia('(pointer: fine)').matches) setTimeout(() => window.__film().catch(() => {}), 5000); // desktop: have the film ready
+      const fail = (text) => {
+        form.querySelector('button').disabled = false;
+        void form.offsetWidth;
+        form.classList.add('bad', 'shake');
+        msg.textContent = text;
+        input.select();
       };
 
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const btn = form.querySelector('button');
-        btn.disabled = true;
+        form.querySelector('button').disabled = true;
         msg.textContent = '';
         form.classList.remove('bad', 'shake');
+        if (!sw) return fail('Bitte öffnen Sie die Seite in einem aktuellen Browser.');
+        let key;
         try {
-          const buf = new Uint8Array(await (data ??= fetchBin('d.bin')));
+          const salt = new Uint8Array(await fetchBin(BASE + 's.bin'));
           const base = await subtle.importKey('raw', new TextEncoder().encode(input.value), 'PBKDF2', false, ['deriveKey']);
-          const key = await subtle.deriveKey({name: 'PBKDF2', salt: buf.slice(0, 16), iterations: ITER, hash: 'SHA-256'}, base, {name: 'AES-GCM', length: 256}, true, ['decrypt']);
-          await open(key);
+          key = await subtle.deriveKey({name: 'PBKDF2', salt, iterations: ITER, hash: 'SHA-256'}, base, {name: 'AES-GCM', length: 256}, true, ['decrypt']);
+          // verify with the start page of the site
+          const b = new Uint8Array(await fetchBin(BASE + '_enc/' + (await hashName(BASE + 'index.html')) + '.bin'));
+          await subtle.decrypt({name: 'AES-GCM', iv: b.slice(0, 12)}, key, b.slice(12));
         } catch (err) {
-          if (!(err instanceof DOMException)) data = undefined; // network error: retry the download next time
-          btn.disabled = false;
-          void form.offsetWidth;
-          form.classList.add('bad', 'shake');
-          msg.textContent = err instanceof DOMException ? 'Das Passwort ist nicht korrekt.' : 'Die Seite konnte nicht geladen werden. Bitte später erneut versuchen.';
-          input.select();
+          return fail(err instanceof DOMException ? 'Das Passwort ist nicht korrekt.' : 'Die Seite konnte nicht geladen werden. Bitte später erneut versuchen.');
+        }
+        try {
+          const raw = await subtle.exportKey('raw', key);
+          const reg = await navigator.serviceWorker.ready;
+          await new Promise((ok, no) => {
+            const ch = new MessageChannel();
+            ch.port1.onmessage = () => ok();
+            reg.active.postMessage({type: 'key', raw}, [ch.port2]);
+            setTimeout(() => no(new Error('timeout')), 8000);
+          });
+          location.reload();
+        } catch {
+          fail('Die Seite konnte nicht geöffnet werden. Bitte erneut versuchen.');
         }
       });
-
-      // same tab, already unlocked => straight in
-      (async () => {
-        const k = sessionStorage.getItem('k');
-        if (!k) return;
-        try {
-          await open(await subtle.importKey('raw', Uint8Array.from(atob(k), (c) => c.charCodeAt(0)), 'AES-GCM', true, ['decrypt']));
-        } catch {
-          sessionStorage.removeItem('k');
-        }
-      })();
     </script>
   </body>
 </html>

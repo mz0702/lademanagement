@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Zugang</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1b1b20;
+        --line: #d9d9df;
+        --muted: #8b8b95;
+        --err: #c62f2f;
+        --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: #fff;
+        color: var(--ink);
+        font: 16px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        display: grid;
+        place-items: center;
+      }
+      form {
+        width: min(340px, calc(100vw - 32px));
+        animation: in 500ms var(--ease-out) 80ms backwards;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+      input {
+        flex: 1;
+        min-width: 0;
+        height: 48px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        font: inherit;
+        color: inherit;
+        background: #fff;
+        outline: none;
+        transition: border-color 150ms ease, box-shadow 150ms ease;
+      }
+      input:focus {
+        border-color: var(--ink);
+        box-shadow: 0 0 0 3px rgba(27, 27, 32, 0.08);
+      }
+      form.bad input {
+        border-color: var(--err);
+        box-shadow: 0 0 0 3px rgba(198, 47, 47, 0.1);
+      }
+      button {
+        width: 48px;
+        height: 48px;
+        flex: none;
+        border: 0;
+        border-radius: 10px;
+        background: var(--ink);
+        color: #fff;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition: transform 140ms var(--ease-out), opacity 150ms ease;
+      }
+      button:active {
+        transform: scale(0.97);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: progress;
+      }
+      button:focus-visible {
+        outline: 3px solid rgba(27, 27, 32, 0.25);
+        outline-offset: 2px;
+      }
+      .msg {
+        min-height: 22px;
+        margin: 10px 2px 0;
+        font-size: 13px;
+        color: var(--err);
+      }
+      form.shake {
+        animation: shake 320ms ease;
+      }
+      footer {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 20px;
+        text-align: center;
+        font-size: 13px;
+      }
+      footer a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      footer a:hover {
+        color: var(--ink);
+      }
+      @keyframes in {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+      }
+      @keyframes shake {
+        0%,
+        100% {
+          transform: none;
+        }
+        25% {
+          transform: translateX(-6px);
+        }
+        75% {
+          transform: translateX(6px);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        form,
+        form.shake {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <form id="gate" autocomplete="off">
+      <div class="row">
+        <label for="pw">Passwort</label>
+        <input id="pw" type="password" placeholder="Passwort" autocomplete="current-password" required autofocus />
+        <button type="submit" aria-label="Öffnen">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+        </button>
+      </div>
+      <p class="msg" id="msg" role="alert"></p>
+    </form>
+    <footer><a href="/lademanagement/impressum.html">Impressum</a></footer>
+
+    <script>
+      // The whole site is AES-256-GCM encrypted (_enc/<sha256(path)>.bin = iv|ciphertext, key = PBKDF2-SHA256(password, s.bin)).
+      // After the password is verified, the key goes to the service worker (sw.js), which decrypts every request.
+      // Keep ITER in sync with scripts/deploy.mjs; BASE is filled in by the deploy script.
+      const BASE = '/lademanagement/';
+      const ITER = 600000;
+      const subtle = crypto.subtle;
+      const form = document.getElementById('gate');
+      const input = document.getElementById('pw');
+      const msg = document.getElementById('msg');
+      const sw = 'serviceWorker' in navigator && window.isSecureContext;
+      const fetchBin = (u) => fetch(u, {cache: 'no-store'}).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))));
+      const hashName = async (p) =>
+        [...new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(p)))]
+          .slice(0, 16)
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+      if (sw) navigator.serviceWorker.register(BASE + 'sw.js', {scope: BASE}).catch(() => {});
+
+      const fail = (text) => {
+        form.querySelector('button').disabled = false;
+        void form.offsetWidth;
+        form.classList.add('bad', 'shake');
+        msg.textContent = text;
+        input.select();
+      };
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        form.querySelector('button').disabled = true;
+        msg.textContent = '';
+        form.classList.remove('bad', 'shake');
+        if (!sw) return fail('Bitte öffnen Sie die Seite in einem aktuellen Browser.');
+        let key;
+        try {
+          const salt = new Uint8Array(await fetchBin(BASE + 's.bin'));
+          const base = await subtle.importKey('raw', new TextEncoder().encode(input.value), 'PBKDF2', false, ['deriveKey']);
+          key = await subtle.deriveKey({name: 'PBKDF2', salt, iterations: ITER, hash: 'SHA-256'}, base, {name: 'AES-GCM', length: 256}, true, ['decrypt']);
+          // verify with the start page of the site
+          const b = new Uint8Array(await fetchBin(BASE + '_enc/' + (await hashName(BASE + 'index.html')) + '.bin'));
+          await subtle.decrypt({name: 'AES-GCM', iv: b.slice(0, 12)}, key, b.slice(12));
+        } catch (err) {
+          return fail(err instanceof DOMException ? 'Das Passwort ist nicht korrekt.' : 'Die Seite konnte nicht geladen werden. Bitte später erneut versuchen.');
+        }
+        try {
+          const raw = await subtle.exportKey('raw', key);
+          const reg = await navigator.serviceWorker.ready;
+          await new Promise((ok, no) => {
+            const ch = new MessageChannel();
+            ch.port1.onmessage = () => ok();
+            reg.active.postMessage({type: 'key', raw}, [ch.port2]);
+            setTimeout(() => no(new Error('timeout')), 8000);
+          });
+          location.reload();
+        } catch {
+          fail('Die Seite konnte nicht geöffnet werden. Bitte erneut versuchen.');
+        }
+      });
+    </script>
+  </body>
+</html>
